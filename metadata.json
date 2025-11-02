@@ -1,0 +1,7 @@
+{
+  "name": "Smart Shopping Tracker",
+  "description": "An intelligent shopping list application that helps you track items, find where to buy them with AI-powered suggestions, and maintain a history of your purchases to monitor prices and locations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
