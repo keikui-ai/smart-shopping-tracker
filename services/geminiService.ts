@@ -1,10 +1,36 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { PurchaseHistoryItem, ScannedItem } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Get API key with fallbacks and validation
+const getApiKey = (): string => {
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  
+  if (!apiKey) {
+    console.error('GEMINI_API_KEY is not configured. Please set it in your .env.local file.');
+    throw new Error('API key not configured');
+  }
+  
+  return apiKey;
+};
+
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = (): GoogleGenAI => {
+  if (!aiInstance) {
+    try {
+      aiInstance = new GoogleGenAI({ apiKey: getApiKey() });
+    } catch (error) {
+      console.error('Failed to initialize GoogleGenAI:', error);
+      throw error;
+    }
+  }
+  return aiInstance;
+};
 
 export const suggestStore = async (itemName: string, itemHistory: PurchaseHistoryItem[]): Promise<string> => {
   try {
+    const ai = getAI();
+    
     let historyText = "No purchase history available.";
     if (itemHistory.length > 0) {
       // Sort by price to find the cheapest first
@@ -32,15 +58,41 @@ Your suggestion should be concise. For example: "FairPrice, as it was the cheape
       },
     });
 
-    return response.text.trim() || "No suggestion found.";
+    const result = response.text?.trim();
+    
+    if (!result) {
+      return "No suggestion available at this time.";
+    }
+    
+    return result;
   } catch (error) {
     console.error("Error fetching suggestion from Gemini API:", error);
-    return "Could not get suggestion.";
+    
+    if (error instanceof Error) {
+      if (error.message.includes('API key')) {
+        return "API key not configured. Please check your settings.";
+      }
+      if (error.message.includes('quota')) {
+        return "API quota exceeded. Please try again later.";
+      }
+      if (error.message.includes('network')) {
+        return "Network error. Please check your connection.";
+      }
+    }
+    
+    return "Could not get suggestion. Please try again later.";
   }
 };
 
 export const extractItemsFromReceipt = async (base64Image: string): Promise<ScannedItem[]> => {
   try {
+    const ai = getAI();
+    
+    // Validate base64 image
+    if (!base64Image || !base64Image.includes(',')) {
+      throw new Error('Invalid image format. Please try capturing the receipt again.');
+    }
+    
     const contents = {
       parts: [
         {
@@ -86,17 +138,59 @@ export const extractItemsFromReceipt = async (base64Image: string): Promise<Scan
       },
     });
 
-    const jsonText = response.text.trim();
-    const result = JSON.parse(jsonText);
-
-    if (result && Array.isArray(result.items)) {
-      return result.items.filter(item => item.name && typeof item.price === 'number'); // Basic validation
+    const jsonText = response.text?.trim();
+    
+    if (!jsonText) {
+      throw new Error('No response from AI. Please try again.');
     }
-    return [];
+    
+    let result;
+    try {
+      result = JSON.parse(jsonText);
+    } catch (parseError) {
+      console.error('Failed to parse JSON response:', jsonText);
+      throw new Error('Failed to parse AI response. The receipt might be unclear.');
+    }
+
+    if (!result || !Array.isArray(result.items)) {
+      throw new Error('Invalid response format. Please try again with a clearer image.');
+    }
+    
+    // Validate and filter items
+    const validItems = result.items.filter((item: any) => {
+      return item.name && 
+             typeof item.name === 'string' && 
+             item.name.trim() !== '' &&
+             typeof item.price === 'number' && 
+             item.price > 0 &&
+             typeof item.quantity === 'number' &&
+             item.quantity > 0;
+    });
+    
+    if (validItems.length === 0) {
+      throw new Error('No valid items found on the receipt. Please try again with a clearer image.');
+    }
+    
+    return validItems;
 
   } catch (error) {
     console.error("Error extracting items from receipt:", error);
-    // Let the caller handle the error display
+    
+    if (error instanceof Error) {
+      if (error.message.includes('API key')) {
+        throw new Error('API key not configured. Please check your settings.');
+      }
+      if (error.message.includes('quota')) {
+        throw new Error('API quota exceeded. Please try again later.');
+      }
+      // Re-throw our custom error messages
+      if (error.message.includes('Invalid') || 
+          error.message.includes('No valid') || 
+          error.message.includes('Failed to parse')) {
+        throw error;
+      }
+    }
+    
     throw new Error('Failed to analyze receipt. The image might be unclear or the format is not supported.');
   }
 };
