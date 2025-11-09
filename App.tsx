@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ShoppingListItem, PurchaseHistoryItem, ScannedItem, ToastMessage, ToastType, User } from './types';
-import { useLocalStorage } from './hooks/useLocalStorage';
 import { getPurchaseHistory, addPurchaseHistoryItems } from './services/googleSheetService';
 import { extractItemsFromReceipt } from './services/geminiService';
 import { authService } from './services/authService';
@@ -21,7 +20,8 @@ const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   
-  const [shoppingList, setShoppingList] = useLocalStorage<ShoppingListItem[]>(`shoppingList_${user?.id}`, []);
+  // Initialize shopping list state without localStorage hook
+  const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>([]);
   const [purchaseHistory, setPurchaseHistory] = useState<PurchaseHistoryItem[]>([]);
   
   const [purchasingItem, setPurchasingItem] = useState<ShoppingListItem | null>(null);
@@ -50,6 +50,7 @@ const App: React.FC = () => {
     setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
   }, []);
 
+  // Handle authentication state changes
   useEffect(() => {
     const unsubscribe = authService.onAuthStateChanged(currentUser => {
       setUser(currentUser);
@@ -58,12 +59,45 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  // Load shopping list from localStorage when user changes
+  useEffect(() => {
+    if (!user) {
+      setShoppingList([]);
+      return;
+    }
+
+    try {
+      const stored = localStorage.getItem(`shoppingList_${user.id}`);
+      if (stored) {
+        setShoppingList(JSON.parse(stored));
+      } else {
+        setShoppingList([]);
+      }
+    } catch (error) {
+      console.error('Error loading shopping list:', error);
+      setShoppingList([]);
+    }
+  }, [user]);
+
+  // Save shopping list to localStorage whenever it changes
+  useEffect(() => {
+    if (!user) return;
+
+    try {
+      localStorage.setItem(`shoppingList_${user.id}`, JSON.stringify(shoppingList));
+    } catch (error) {
+      console.error('Error saving shopping list:', error);
+      showToast('Failed to save shopping list locally.', 'error');
+    }
+  }, [shoppingList, user, showToast]);
+
+  // Fetch purchase history when user changes
   useEffect(() => {
     if (!user) {
       setPurchaseHistory([]);
-      setShoppingList([]);
+      setIsLoadingHistory(false);
       return;
-    };
+    }
 
     const fetchHistory = async () => {
       setIsLoadingHistory(true);
@@ -82,7 +116,16 @@ const App: React.FC = () => {
   }, [user, showToast]);
 
   const handleSignOut = async () => {
-    await authService.signOut();
+    try {
+      await authService.signOut();
+      // Clear local state
+      setShoppingList([]);
+      setPurchaseHistory([]);
+      setActiveTab('list');
+    } catch (error) {
+      console.error('Error signing out:', error);
+      showToast('Failed to sign out.', 'error');
+    }
   };
 
   const handleAddItem = (item: Omit<ShoppingListItem, 'id'>) => {
@@ -97,7 +140,7 @@ const App: React.FC = () => {
 
     const newItem: ShoppingListItem = {
       ...item,
-      id: new Date().toISOString(),
+      id: `${Date.now()}-${Math.random()}`, // More unique ID
     };
     setShoppingList(prev => [...prev, newItem]);
     showToast(`${item.name} added to list`, 'success');
@@ -106,6 +149,7 @@ const App: React.FC = () => {
 
   const handleRemoveItem = (id: string) => {
     setShoppingList(prev => prev.filter(item => item.id !== id));
+    showToast('Item removed from list', 'info');
   };
 
   const handleStartPurchase = (item: ShoppingListItem) => {
@@ -117,14 +161,16 @@ const App: React.FC = () => {
       showToast('You must be logged in to perform this action.', 'error');
       return;
     }
+    
     const newPurchase: PurchaseHistoryItem = {
-      id: new Date().toISOString(),
+      id: `${Date.now()}-${Math.random()}`,
       name: item.name,
       price,
       store,
       date: new Date().toISOString(),
       imageUrl,
     };
+    
     setPurchaseHistory(prev => [newPurchase, ...prev]);
     setShoppingList(prev => prev.filter(i => i.id !== item.id));
     setPurchasingItem(null);
@@ -151,6 +197,7 @@ const App: React.FC = () => {
       prevList.map(item => (item.id === updatedItem.id ? updatedItem : item))
     );
     setEditingItem(null);
+    showToast('Item updated', 'success');
   };
 
   const handleScanReceipt = () => {
@@ -160,6 +207,7 @@ const App: React.FC = () => {
   const handleCaptureReceipt = async (imageBase64: string) => {
     setIsScanning(false);
     setIsProcessingReceipt(true);
+    
     try {
       const items = await extractItemsFromReceipt(imageBase64);
       if (items.length === 0) {
@@ -180,8 +228,9 @@ const App: React.FC = () => {
       showToast('You must be logged in to perform this action.', 'error');
       return;
     }
+    
     const newPurchases: PurchaseHistoryItem[] = items.map(item => ({
-      id: `${new Date().toISOString()}-${item.name}-${Math.random()}`,
+      id: `${Date.now()}-${item.name}-${Math.random()}`,
       name: item.name,
       price: item.price,
       store,
